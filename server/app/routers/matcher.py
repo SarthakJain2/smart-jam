@@ -6,6 +6,9 @@ from ..deps import get_current_user
 from ..ai.embeddings import embed_texts
 import numpy as np
 import re
+from fastapi import UploadFile, File, Form # add to imports
+import os, tempfile
+import pdfplumber, docx2txt
 
 router = APIRouter(prefix="/matcher", tags=["matcher"])
 
@@ -56,4 +59,76 @@ async def score_resume(app_id: int, payload: schemas.MatchRequest, db: Session =
     "skills_present": present,
     "skills_missing": missing,
     "created_at": match.created_at,
+    }
+@router.post("/upload/{app_id}", response_model=schemas.MatchOut)
+async def score_resume_upload(
+    app_id: int,
+    resume: UploadFile = File(...),
+    jd_text: str = Form(...),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
+    app = db.query(models.Application).filter(models.Application.id == app_id, models.Application.user_id == user.id).first()
+    if not app:
+        raise HTTPException(status_code=404, detail="Application not found")
+
+    fname = (resume.filename or "").lower()
+    if not (fname.endswith(".pdf") or fname.endswith(".docx")):
+        raise HTTPException(status_code=400, detail="Unsupported file type. Use PDF or DOCX.")
+
+    # Extract text from resume
+    if fname.endswith(".pdf"):
+        resume.file.seek(0)
+        try:
+            with pdfplumber.open(resume.file) as pdf:
+                pages = [p.extract_text() or "" for p in pdf.pages]
+            resume_text = "".join(pages)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Failed to read PDF")
+    else: # .docx
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+                tmp.write(await resume.read())
+                tmp_path = tmp.name
+            resume_text = docx2txt.process(tmp_path) or ""
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+    resume_text = (resume_text or "").strip()
+    jd_text = (jd_text or "").strip()
+    if len(resume_text) < 20:
+        raise HTTPException(status_code=400, detail="No readable text in resume")
+    if len(jd_text) < 20:
+        raise HTTPException(status_code=400, detail="Provide a longer job description")
+
+    vecs = await embed_texts([resume_text, jd_text])
+    a, b = np.array(vecs[0]), np.array(vecs[1])
+    cosine = float(np.clip(a @ b, -1.0, 1.0))
+    score = round((cosine + 1) * 50, 2)
+
+    r_keys = _extract_keywords(resume_text)
+    j_keys = _extract_keywords(jd_text)
+    present = sorted(list(r_keys & j_keys))
+    missing = sorted(list(j_keys - r_keys))
+
+    match = models.Match(application_id=app.id, score=score,
+    skills_present=",".join(present),
+    skills_missing=",".join(missing))
+    
+    app.resume_text = resume_text
+    app.jd_text = jd_text
+
+    db.add(match)
+    db.commit()
+    db.refresh(match)
+
+    return {
+        "id": match.id,
+        "score": match.score,
+        "skills_present": present,
+        "skills_missing": missing,
+        "created_at": match.created_at,
     }
