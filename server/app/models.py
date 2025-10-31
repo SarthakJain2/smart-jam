@@ -3,6 +3,10 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 from .db import Base
 import enum
+from sqlalchemy import Column, Integer, String, DateTime
+from datetime import datetime
+from .db import Base
+from sqlalchemy.orm import relationship
 
 class ApplicationStatus(str, enum.Enum):
     APPLIED = "Applied"
@@ -14,14 +18,18 @@ class ApplicationStatus(str, enum.Enum):
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
-    email = Column(String(255), unique=True, index=True, nullable=False)
-    hashed_password = Column(String(255), nullable=False)
+    email = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # reset
+    reset_token = Column(String, nullable=True)
+    reset_token_expires = Column(DateTime, nullable=True)
 
-    applications = relationship("Application", back_populates="owner")
+    applications = relationship("Application", back_populates="user")
 
 class Application(Base):
     __tablename__ = "applications"
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), index=True)
     company = Column(String(255), index=True, nullable=False)
@@ -31,11 +39,12 @@ class Application(Base):
     recruiter = Column(String(255))
     notes = Column(Text)
     deadline = Column(DateTime, nullable=True)
+    resume_text = Column(Text, nullable=True)
+    jd_text = Column(Text, nullable=True)
 
-    resume_text = Column(Text, nullable=True) # snapshot of resume used
-    jd_text = Column(Text, nullable=True) # snapshot of JD used
+    # ✅ rename from `owner` to `user`
+    user = relationship("User", back_populates="applications")
 
-    owner = relationship("User", back_populates="applications")
     matches = relationship("Match", back_populates="application", cascade="all, delete-orphan")
 
 class Match(Base):
